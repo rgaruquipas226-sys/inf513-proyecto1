@@ -1,0 +1,215 @@
+DROP TABLE IF EXISTS comando, metrica, pagina_detectada, pauta, material_publicitario, cuota,
+    detalle_cotizacion, cotizacion, servicio, cuenta_red_social, usuario, rol;
+
+CREATE EXTENSION IF NOT EXISTS btree_gist;
+
+CREATE TABLE rol (
+  id     SERIAL PRIMARY KEY,
+  nombre VARCHAR(30) NOT NULL UNIQUE
+);
+
+CREATE TABLE usuario (
+  id             SERIAL PRIMARY KEY,
+  rol_id         INT NOT NULL REFERENCES rol(id),
+  nombres        VARCHAR(80) NOT NULL,
+  apellidos      VARCHAR(80) NOT NULL,
+  ci_nit         VARCHAR(20),
+  email          VARCHAR(120) NOT NULL UNIQUE,
+  telefono       VARCHAR(20),
+  username       VARCHAR(40) NOT NULL UNIQUE,
+  password       VARCHAR(255) NOT NULL,
+  fecha_creacion TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE cuenta_red_social (
+  id            SERIAL PRIMARY KEY,
+  usuario_id    INT REFERENCES usuario(id) ON DELETE SET NULL,
+  red_social    VARCHAR(20) NOT NULL
+                CHECK (red_social IN ('Facebook','Instagram','TikTok','YouTube')),
+  nombre_cuenta VARCHAR(100) NOT NULL,
+  url           VARCHAR(255) NOT NULL UNIQUE,
+  token_acceso  TEXT
+);
+
+CREATE TABLE servicio (
+  id          SERIAL PRIMARY KEY,
+  nombre      VARCHAR(80) NOT NULL,
+  descripcion TEXT,
+  precio      NUMERIC(10,3) NOT NULL CHECK (precio >= 0)
+);
+
+CREATE TABLE cotizacion (
+  id         SERIAL PRIMARY KEY,
+  cliente_id INT NOT NULL REFERENCES usuario(id) ON DELETE CASCADE,
+  usuario_id INT REFERENCES usuario(id) ON DELETE SET NULL,
+  fecha      DATE NOT NULL DEFAULT CURRENT_DATE,
+  total      NUMERIC(10,3) NOT NULL DEFAULT 0,
+  tipo_pago  VARCHAR(10) NOT NULL DEFAULT 'contado'
+             CHECK (tipo_pago IN ('contado','cuotas')),
+  nro_cuotas INT NOT NULL DEFAULT 1 CHECK (nro_cuotas >= 1),
+  estado     VARCHAR(15) NOT NULL DEFAULT 'pendiente'
+             CHECK (estado IN ('pendiente','aprobada','pagada')),
+  CHECK (tipo_pago = 'cuotas' OR nro_cuotas = 1)
+);
+
+CREATE TABLE detalle_cotizacion (
+  id              SERIAL PRIMARY KEY,
+  cotizacion_id   INT NOT NULL REFERENCES cotizacion(id) ON DELETE CASCADE,
+  servicio_id     INT NOT NULL REFERENCES servicio(id) ON DELETE CASCADE,
+  cantidad        INT NOT NULL CHECK (cantidad > 0),
+  precio_unitario NUMERIC(10,3) NOT NULL,
+  subtotal        NUMERIC(10,3) NOT NULL
+);
+
+CREATE TABLE cuota (
+  id                SERIAL PRIMARY KEY,
+  cotizacion_id     INT NOT NULL REFERENCES cotizacion(id) ON DELETE CASCADE,
+  nro_cuota         INT NOT NULL,
+  monto             NUMERIC(10,3) NOT NULL CHECK (monto > 0),
+  fecha_vencimiento DATE NOT NULL,
+  fecha_pago        DATE,
+  metodo            VARCHAR(10) CHECK (metodo IN ('efectivo','QR')),
+  nro_transaccion   VARCHAR(50),
+  comprobante       VARCHAR(255),
+  estado            VARCHAR(10) NOT NULL DEFAULT 'pendiente'
+                    CHECK (estado IN ('pendiente','pagada','vencida')),
+  verificado_por    INT REFERENCES usuario(id) ON DELETE SET NULL,
+  UNIQUE (cotizacion_id, nro_cuota),
+  CHECK (estado <> 'pagada' OR (metodo IS NOT NULL AND fecha_pago IS NOT NULL)),
+  CHECK (metodo <> 'QR' OR estado <> 'pagada' OR comprobante IS NOT NULL)
+);
+
+CREATE TABLE material_publicitario (
+  id            SERIAL PRIMARY KEY,
+  cotizacion_id INT NOT NULL REFERENCES cotizacion(id) ON DELETE CASCADE,
+  titulo        VARCHAR(120) NOT NULL,
+  archivo       VARCHAR(500) NOT NULL,
+  tipo          VARCHAR(10) NOT NULL CHECK (tipo IN ('imagen','video')),
+  estado        VARCHAR(10) NOT NULL DEFAULT 'pendiente'
+                CHECK (estado IN ('pendiente','aprobado','rechazado')),
+  validado_por  INT REFERENCES usuario(id) ON DELETE SET NULL,
+  observacion   TEXT,
+  fecha_carga   TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE pauta (
+  id                   SERIAL PRIMARY KEY,
+  material_id          INT NOT NULL REFERENCES material_publicitario(id) ON DELETE CASCADE,
+  cuenta_red_social_id INT NOT NULL REFERENCES cuenta_red_social(id) ON DELETE CASCADE,
+  tipo                 VARCHAR(10) NOT NULL
+                       CHECK (tipo IN ('post','historia','reel','en_vivo')),
+  fecha_hora_inicio    TIMESTAMPTZ NOT NULL,
+  fecha_hora_fin       TIMESTAMPTZ NOT NULL,
+  url_publicacion      VARCHAR(500),
+  estado               VARCHAR(12) NOT NULL DEFAULT 'programada'
+                       CHECK (estado IN ('programada','publicada','cancelada')),
+  CHECK (fecha_hora_fin > fecha_hora_inicio),
+  CHECK (estado <> 'publicada' OR url_publicacion IS NOT NULL),
+  EXCLUDE USING gist (
+    cuenta_red_social_id WITH =,
+    tstzrange(fecha_hora_inicio, fecha_hora_fin, '[)') WITH &&
+  ) WHERE (tipo = 'en_vivo' AND estado <> 'cancelada')
+);
+
+CREATE TABLE pagina_detectada (
+  id              SERIAL PRIMARY KEY,
+  red_social      VARCHAR(20) NOT NULL,
+  nombre_pagina   VARCHAR(255) NOT NULL,
+  url             VARCHAR(500) NOT NULL UNIQUE,
+  palabra_clave   VARCHAR(80) NOT NULL,
+  seguidores      INT NOT NULL DEFAULT 0,
+  estado          VARCHAR(12) NOT NULL DEFAULT 'detectada'
+                  CHECK (estado IN ('detectada','denunciada','descartada')),
+  revisado_por    INT REFERENCES usuario(id) ON DELETE SET NULL,
+  fecha_deteccion TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE metrica (
+  id            SERIAL PRIMARY KEY,
+  pauta_id      INT NOT NULL REFERENCES pauta(id) ON DELETE CASCADE,
+  fecha_captura TIMESTAMP NOT NULL DEFAULT NOW(),
+  vistas        INT NOT NULL DEFAULT 0,
+  reacciones    INT NOT NULL DEFAULT 0,
+  comentarios   INT NOT NULL DEFAULT 0,
+  compartidos   INT NOT NULL DEFAULT 0
+);
+CREATE INDEX metrica_ultima ON metrica (pauta_id, fecha_captura DESC);
+
+CREATE TABLE comando (
+  id        SERIAL PRIMARY KEY,
+  caso_uso  VARCHAR(60) NOT NULL,
+  accion    VARCHAR(60) NOT NULL,
+  parametro VARCHAR(255) NOT NULL,
+  ejemplo   VARCHAR(500) NOT NULL,
+  roles     VARCHAR(60) NOT NULL
+);
+
+INSERT INTO rol (nombre) VALUES ('Director'), ('Encargado'), ('Cliente');
+
+INSERT INTO usuario (rol_id, nombres, apellidos, ci_nit, email, telefono, username, password)
+VALUES (1, 'Director', 'General', '0000000', '123evil71@gmail.com', '70000000', 'director',
+        '9e4d7bba246abe731743986c4dc50897b68b1d0249a066abb3530fcbaa33dab3');
+
+INSERT INTO servicio (nombre, descripcion, precio) VALUES
+('Post', 'Publicación de imagen en una red', 100),
+('Historia', 'Historia de 24 horas', 60),
+('Reel', 'Video corto', 200),
+('En vivo', 'Transmisión en vivo de hasta 1 hora', 500),
+('Paquete', 'Post + Reel en las 4 redes', 1000);
+
+INSERT INTO comando (caso_uso, accion, parametro, ejemplo, roles) VALUES
+('Ayuda', 'HELP', 'HELP', 'HELP', 'Todos'),
+('CU1 Usuarios', 'INSROL', 'INSROL["nombre"]', 'INSROL["Auditor"]', 'Director'),
+('CU1 Usuarios', 'MODROL', 'MODROL["id","nombre"]', 'MODROL["4","Supervisor"]', 'Director'),
+('CU1 Usuarios', 'ELIROL', 'ELIROL["id"]', 'ELIROL["4"]', 'Director'),
+('CU1 Usuarios', 'LISROL', 'LISROL["*"]', 'LISROL["*"]', 'Director, Encargado'),
+('CU1 Usuarios', 'REGUSU', 'REGUSU["nombres","apellidos","ci_nit","telefono","username","password"]', 'REGUSU["Juan","Pérez","7894561","76543210","juanp","clave123"]', 'Visitante (correo no registrado)'),
+('CU1 Usuarios', 'INSUSU', 'INSUSU["rol_id (1 Director, 2 Encargado, 3 Cliente)","nombres","apellidos","ci_nit","email","telefono","username","password"]', 'INSUSU["2","Ana","Rojas","456789","ana@gmail.com","70011122","ana","clave123"]', 'Director'),
+('CU1 Usuarios', 'MODUSU', 'MODUSU["id","nombres","apellidos","ci_nit","email","telefono","username"]', 'MODUSU["3","Juan","Pérez","7894561","juan@gmail.com","76543210","juanp"]', 'Director'),
+('CU1 Usuarios', 'ASIUSU', 'ASIUSU["usuario_id","rol_id (1 Director, 2 Encargado, 3 Cliente)"]', 'ASIUSU["3","2"]', 'Director'),
+('CU1 Usuarios', 'ELIUSU', 'ELIUSU["id"]', 'ELIUSU["2"]', 'Director'),
+('CU1 Usuarios', 'LISUSU', 'LISUSU["*"]', 'LISUSU["*"]', 'Director, Encargado'),
+('CU2 Cuentas', 'INSCUE', 'INSCUE["Facebook | Instagram | TikTok | YouTube","nombre_cuenta","url","token o -"]', 'INSCUE["Facebook","UAGRM Oficial","https://facebook.com/uagrm","-"]', 'Director, Encargado'),
+('CU2 Cuentas', 'MODCUE', 'MODCUE["id","Facebook | Instagram | TikTok | YouTube","nombre_cuenta","url","token o -"]', 'MODCUE["1","Facebook","UAGRM","https://facebook.com/uagrm","-"]', 'Director, Encargado'),
+('CU2 Cuentas', 'ELICUE', 'ELICUE["id"]', 'ELICUE["1"]', 'Director, Encargado'),
+('CU2 Cuentas', 'LISCUE', 'LISCUE["*"]', 'LISCUE["*"]', 'Todos (también sin registrarse)'),
+('CU3 Servicios', 'INSSER', 'INSSER["nombre","descripcion","precio"]', 'INSSER["Reel","Video corto","200"]', 'Director, Encargado'),
+('CU3 Servicios', 'MODSER', 'MODSER["id","nombre","descripcion","precio"]', 'MODSER["3","Reel","Video de 30 s","250"]', 'Director, Encargado'),
+('CU3 Servicios', 'ELISER', 'ELISER["id"]', 'ELISER["3"]', 'Director, Encargado'),
+('CU3 Servicios', 'LISSER', 'LISSER["*"]', 'LISSER["*"]', 'Todos (también sin registrarse)'),
+('CU3 Cotización', 'INSCOT', 'INSCOT["cliente_id","contado | cuotas","nro_cuotas (solo cuotas)","servicio_id","cantidad", ...más pares]', 'INSCOT["5","cuotas","2","1","2","3","1"]', 'Director, Encargado'),
+('CU3 Cotización', 'ELICOT', 'ELICOT["id"]', 'ELICOT["1"]', 'Director, Encargado'),
+('CU3 Cotización', 'LISCOT', 'LISCOT["*"]', 'LISCOT["*"]', 'Todos (el cliente ve las suyas)'),
+('CU3 Cotización', 'VERCOT', 'VERCOT["id"]', 'VERCOT["1"]', 'Todos (el cliente ve las suyas)'),
+('CU3 Cotización', 'SOLCOT', 'SOLCOT["servicio_id","cantidad"]', 'SOLCOT["1","2"]', 'Cliente (queda aprobada, pago único solo con QR)'),
+('CU3 Cotización', 'LISDET', 'LISDET["cotizacion_id"]', 'LISDET["1"]', 'Todos (el cliente las suyas)'),
+('CU3 Pagos', 'LISCUO', 'LISCUO["cotizacion_id"]', 'LISCUO["1"]', 'Todos (el cliente las suyas)'),
+('CU3 Pagos', 'PAGCUO (efectivo)', 'PAGCUO["cuota_id","efectivo"]', 'PAGCUO["5","efectivo"]', 'Director, Encargado'),
+('CU3 Pagos', 'PAGCUO (QR a mano)', 'PAGCUO["cuota_id","QR","nro_transaccion","enlace_del_comprobante"]', 'PAGCUO["5","QR","884512","https://drive.google.com/comprobante"]', 'Director, Encargado'),
+('CU3 Pagos', 'QRPCUO', 'QRPCUO["cuota_id"]', 'QRPCUO["5"]', 'Todos (el cliente las suyas)'),
+('CU3 Pagos', 'VERCUO', 'VERCUO["cuota_id"]', 'VERCUO["5"]', 'Todos (el cliente las suyas)'),
+('CU3 Pagos', 'VENCUO', 'VENCUO["*"]', 'VENCUO["*"]', 'Director, Encargado'),
+('CU4 Material', 'INSMAT', 'INSMAT["cotizacion_id","titulo","enlace_del_archivo","imagen | video"]', 'INSMAT["1","Banner Feria","https://drive.google.com/banner","imagen"]', 'Todos (el cliente las suyas)'),
+('CU4 Material', 'LISMAT', 'LISMAT["* o cotizacion_id"]', 'LISMAT["1"]', 'Todos (el cliente los suyos)'),
+('CU4 Material', 'APRMAT', 'APRMAT["id","observacion o -"]', 'APRMAT["1"]', 'Director, Encargado (material del cliente)'),
+('CU4 Material', 'RECMAT', 'RECMAT["id","observacion"]', 'RECMAT["1","El logo está pixelado"]', 'Director, Encargado (material del cliente)'),
+('CU5 Pauta', 'INSPAU', 'INSPAU["material_id","cuenta_id","post | historia | reel","AAAA-MM-DD HH:MM"]', 'INSPAU["1","2","reel","2026-10-15 18:00"]', 'Director, Encargado'),
+('CU5 Pauta', 'INSPAU (en vivo)', 'INSPAU["material_id","cuenta_id","en_vivo","AAAA-MM-DD HH:MM inicio","AAAA-MM-DD HH:MM fin"]', 'INSPAU["1","1","en_vivo","2026-10-16 20:00","2026-10-16 21:00"]', 'Director, Encargado'),
+('CU5 Pauta', 'PUBPAU', 'PUBPAU["id","enlace_de_la_publicacion"]', 'PUBPAU["1","https://www.tiktok.com/@uagrm/video/123"]', 'Director, Encargado'),
+('CU5 Pauta', 'CANPAU', 'CANPAU["id"]', 'CANPAU["1"]', 'Director, Encargado'),
+('CU5 Pauta', 'LISPAU', 'LISPAU["*"]', 'LISPAU["*"]', 'Director, Encargado'),
+('CU6 Páginas externas', 'ESCPAG', 'ESCPAG["palabra_clave o *"]', 'ESCPAG["UAGRM"]', 'Director, Encargado'),
+('CU6 Páginas externas', 'LISPAG', 'LISPAG["*"]', 'LISPAG["*"]', 'Director, Encargado'),
+('CU6 Páginas externas', 'DENPAG', 'DENPAG["id"]', 'DENPAG["3"]', 'Director, Encargado'),
+('CU6 Páginas externas', 'DESPAG', 'DESPAG["id"]', 'DESPAG["4"]', 'Director, Encargado'),
+('CU6 Páginas externas', 'INSPAG', 'INSPAG["Facebook | Instagram | TikTok | YouTube","nombre_pagina","url","palabra_clave","seguidores"]', 'INSPAG["Instagram","uagrm.becas.gratis","https://instagram.com/uagrm.becas.gratis","UAGRM","850"]', 'Director, Encargado'),
+('CU7 Métricas', 'CAPMET', 'CAPMET["*"]', 'CAPMET["*"]', 'Director, Encargado'),
+('CU7 Métricas', 'LISMET', 'LISMET["pauta_id"]', 'LISMET["1"]', 'Director, Encargado'),
+('CU7 Métricas', 'INSMET', 'INSMET["pauta_id","vistas","reacciones","comentarios","compartidos"]', 'INSMET["1","2300","160","21","14"]', 'Director, Encargado'),
+('CU8 Reportes', 'REPRED', 'REPRED["*"]', 'REPRED["*"]', 'Director, Encargado'),
+('CU8 Reportes', 'REPGRA', 'REPGRA["*"]', 'REPGRA["*"]', 'Director, Encargado'),
+('CU8 Reportes', 'REPTIP', 'REPTIP["*"]', 'REPTIP["*"]', 'Director, Encargado'),
+('CU8 Reportes', 'REPMEN', 'REPMEN["*"]', 'REPMEN["*"]', 'Director, Encargado'),
+('CU8 Reportes', 'REPPAG', 'REPPAG["*"]', 'REPPAG["*"]', 'Director, Encargado'),
+('CU8 Reportes', 'REPCOB', 'REPCOB["*"]', 'REPCOB["*"]', 'Director, Encargado'),
+('CU8 Reportes', 'REPCOT', 'REPCOT["*"]', 'REPCOT["*"]', 'Director, Encargado');
